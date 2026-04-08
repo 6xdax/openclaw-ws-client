@@ -1,13 +1,20 @@
 """OpenClaw Agent Management"""
 
-from typing import Dict, Any, List
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Dict, Any, List, Optional
+
+if TYPE_CHECKING:
+    from .client import OpenClawClient
 
 
 class AgentsManager:
     """Manage OpenClaw Agents"""
 
-    def __init__(self, client):
-        self._client = client
+    __slots__ = ("_client",)
+
+    def __init__(self, client: "OpenClawClient") -> None:
+        self._client: "OpenClawClient" = client
 
     async def list(self) -> List[Dict[str, Any]]:
         """
@@ -16,16 +23,16 @@ class AgentsManager:
         Returns:
             List of agent objects
         """
-        resp = await self._client._send_request("agents.list")
+        resp: Dict[str, Any] = await self._client._send_request("agents.list")
         return resp.get("agents", [])
 
     async def create(
         self,
         name: str,
-        model: str = None,
-        prompts: Dict[str, str] = None,
-        skills: List[str] = None,
-        **kwargs
+        model: Optional[str] = None,
+        prompts: Optional[Dict[str, str]] = None,
+        skills: Optional[List[str]] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """
         Create a new agent.
@@ -40,19 +47,19 @@ class AgentsManager:
         Returns:
             Created agent object
         """
-        params = {"name": name}
-        if model:
+        params: Dict[str, Any] = {"name": name}
+        if model is not None:
             params["model"] = model
-        if prompts:
+        if prompts is not None:
             params["prompts"] = prompts
-        if skills:
+        if skills is not None:
             params["skills"] = skills
         params.update(kwargs)
 
         resp = await self._client._send_request("agents.create", params)
         return resp.get("agent", {})
 
-    async def update(self, agent_id: str, **updates) -> Dict[str, Any]:
+    async def update(self, agent_id: str, **updates: Any) -> Dict[str, Any]:
         """
         Update an existing agent.
 
@@ -63,7 +70,7 @@ class AgentsManager:
         Returns:
             Updated agent object
         """
-        params = {"agentId": agent_id, **updates}
+        params: Dict[str, Any] = {"agentId": agent_id, **updates}
         resp = await self._client._send_request("agents.update", params)
         return resp.get("agent", {})
 
@@ -90,7 +97,9 @@ class AgentsManager:
         Returns:
             List of file paths
         """
-        resp = await self._client._send_request("agents.files.list", {"agentId": agent_id})
+        resp = await self._client._send_request(
+            "agents.files.list", {"agentId": agent_id}
+        )
         return resp.get("files", [])
 
     async def files_get(self, agent_id: str, path: str) -> str:
@@ -104,7 +113,9 @@ class AgentsManager:
         Returns:
             File content
         """
-        resp = await self._client._send_request("agents.files.get", {"agentId": agent_id, "path": path})
+        resp = await self._client._send_request(
+            "agents.files.get", {"agentId": agent_id, "path": path}
+        )
         return resp.get("content", "")
 
     async def files_set(self, agent_id: str, path: str, content: str) -> bool:
@@ -121,6 +132,6 @@ class AgentsManager:
         """
         resp = await self._client._send_request(
             "agents.files.set",
-            {"agentId": agent_id, "path": path, "content": content}
+            {"agentId": agent_id, "path": path, "content": content},
         )
         return resp.get("ok", False)

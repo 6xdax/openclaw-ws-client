@@ -1,13 +1,20 @@
 """OpenClaw Tools / Plugins Management"""
 
-from typing import Dict, Any, List
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Dict, Any, List
+
+if TYPE_CHECKING:
+    from .client import OpenClawClient
 
 
 class ToolsManager:
     """Manage OpenClaw Tools"""
 
-    def __init__(self, client):
-        self._client = client
+    __slots__ = ("_client",)
+
+    def __init__(self, client: "OpenClawClient") -> None:
+        self._client: "OpenClawClient" = client
 
     async def catalog(self) -> List[Dict[str, Any]]:
         """
@@ -16,7 +23,7 @@ class ToolsManager:
         Returns:
             List of tool definitions
         """
-        resp = await self._client._send_request("tools.catalog")
+        resp: Dict[str, Any] = await self._client._send_request("tools.catalog")
         return resp.get("tools", [])
 
     async def effective(self) -> List[Dict[str, Any]]:

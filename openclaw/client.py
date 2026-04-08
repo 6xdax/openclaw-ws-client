@@ -1,16 +1,28 @@
 """OpenClaw Gateway WebSocket Client"""
 
+from __future__ import annotations
+
 import os
 import asyncio
 import json
 import base64
 import random
 import string
-from typing import Optional, Any, Dict, Callable, AsyncIterator
+from typing import (
+    Optional,
+    Any,
+    Dict,
+    Callable,
+    AsyncIterator,
+    List,
+    Union,
+)
 from websockets.asyncio import client as ws_client
+from dataclasses import dataclass
 
 # Load .env if present
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from .exceptions import (
@@ -18,6 +30,7 @@ from .exceptions import (
     ConnectionError as OpenClawConnectionError,
     AuthenticationError,
     RequestError,
+    TimeoutError as OpenClawTimeoutError,
 )
 from .crypto_utils import load_openclaw_identity, sign_device_auth_v2
 from .agents import AgentsManager
@@ -31,58 +44,128 @@ def gen_nonce(length: int = 32) -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=length))
 
 
+@dataclass
+class ClientInfo:
+    """Client information for connection"""
+    id: str
+    version: str
+    platform: str
+    mode: str
+
+
+@dataclass
+class DeviceInfo:
+    """Device information for authentication"""
+    id: str
+    public_key: str
+    signature: str
+    signed_at: int
+    nonce: str
+
+
 class OpenClawClient:
     """
     OpenClaw Gateway WebSocket Client
 
     Usage:
-        client = OpenClawClient()
-        await client.connect()
-        agents = await client.agents.list()
-        await client.close()
+        async with OpenClawClient() as client:
+            agents = await client.agents.list()
+            await client.close()
     """
+
+    __slots__ = (
+        "url",
+        "token",
+        "device_id",
+        "client_id",
+        "client_mode",
+        "role",
+        "scopes",
+        "reconnect",
+        "max_reconnect_attempts",
+        "reconnect_delay",
+        "ws",
+        "device_token",
+        "private_key",
+        "public_key",
+        "_device_id_from_key",
+        "_pending_requests",
+        "_listening_task",
+        "_event_handlers",
+        "agents",
+        "sessions",
+        "tools",
+    )
 
     def __init__(
         self,
-        url: str = None,
-        token: str = None,
-        device_id: str = None,
+        url: Optional[str] = None,
+        token: Optional[str] = None,
+        device_id: Optional[str] = None,
         client_id: str = "cli",
         client_mode: str = "probe",
         role: str = "operator",
-        scopes: list = None,
+        scopes: Optional[List[str]] = None,
         reconnect: bool = True,
         max_reconnect_attempts: int = 5,
         reconnect_delay: float = 1.0,
-    ):
-        self.url = url or os.environ.get("OPENCLAW_URL", "ws://127.0.0.1:18789")
-        self.token = token or os.environ.get("OPENCLAW_TOKEN", "")
-        self.device_id = device_id or os.environ.get("OPENCLAW_DEVICE_ID", None)
-        self.client_id = client_id
-        self.client_mode = client_mode
-        self.role = role
-        self.scopes = scopes or ["operator.read"]
-        self.reconnect = reconnect
-        self.max_reconnect_attempts = max_reconnect_attempts
-        self.reconnect_delay = reconnect_delay
+    ) -> None:
+        """
+        Initialize OpenClaw client.
 
+        Args:
+            url: Gateway WebSocket URL (default: ws://127.0.0.1:18789)
+            token: Gateway auth token
+            device_id: Device ID (auto-derived from key if not provided)
+            client_id: Client identifier
+            client_mode: Client mode (probe, cli, webchat, etc.)
+            role: Client role (operator, etc.)
+            scopes: List of permission scopes
+            reconnect: Enable auto-reconnect
+            max_reconnect_attempts: Max reconnection attempts
+            reconnect_delay: Initial delay between reconnections (seconds)
+        """
+        self.url: str = url or os.environ.get("OPENCLAW_URL", "ws://127.0.0.1:18789")
+        self.token: str = token or os.environ.get("OPENCLAW_TOKEN", "")
+        self.device_id: Optional[str] = device_id or os.environ.get(
+            "OPENCLAW_DEVICE_ID", None
+        )
+        self.client_id: str = client_id
+        self.client_mode: str = client_mode
+        self.role: str = role
+        self.scopes: List[str] = scopes or ["operator.read"]
+        self.reconnect: bool = reconnect
+        self.max_reconnect_attempts: int = max_reconnect_attempts
+        self.reconnect_delay: float = reconnect_delay
+
+        # WebSocket state
         self.ws: Optional[Any] = None
         self.device_token: Optional[str] = None
-        self.private_key = None
-        self.public_key = None
+
+        # Cryptographic keys
+        self.private_key: Any = None
+        self.public_key: Any = None
         self._device_id_from_key: Optional[str] = None
-        self._pending_requests: Dict[str, asyncio.Future] = {}
-        self._listening_task: Optional[asyncio.Task] = None
-        self._event_handlers: Dict[str, Callable] = {}
 
-        # Initialize managers
-        self.agents = AgentsManager(self)
-        self.sessions = SessionsManager(self)
-        self.tools = ToolsManager(self)
+        # Request tracking
+        self._pending_requests: Dict[str, asyncio.Future[Dict[str, Any]]] = {}
 
-    def _load_identity(self):
+        # Event handling
+        self._listening_task: Optional[asyncio.Task[None]] = None
+        self._event_handlers: Dict[str, Callable[[Dict[str, Any]], Any]] = {}
+
+        # Managers
+        self.agents: AgentsManager = AgentsManager(self)
+        self.sessions: SessionsManager = SessionsManager(self)
+        self.tools: ToolsManager = ToolsManager(self)
+
+    def _load_identity(self) -> None:
         """Load device identity from OpenClaw config"""
-        self.private_key, self.public_key, self._device_id_from_key = load_openclaw_identity()
+        (
+            self.private_key,
+            self.public_key,
+            self._device_id_from_key,
+        ) = load_openclaw_identity()
         if self.device_id is None:
             self.device_id = self._device_id_from_key
 
@@ -110,21 +193,21 @@ class OpenClawClient:
 
         try:
             # 1. Receive challenge
-            challenge = await self.ws.recv()
-            ch_data = json.loads(challenge)
-            nonce = ch_data["payload"]["nonce"]
-            ts = ch_data["payload"]["ts"]
+            challenge: Union[str, bytes] = await self.ws.recv()
+            ch_data: Dict[str, Any] = json.loads(challenge)
+            nonce: str = ch_data["payload"]["nonce"]
+            ts: int = ch_data["payload"]["ts"]
 
             # 2. Build and send connect request
-            payload = self._build_connect_request(nonce, ts)
+            payload: Dict[str, Any] = self._build_connect_request(nonce, ts)
             await self.ws.send(json.dumps(payload, separators=(",", ":")))
 
             # 3. Receive response
-            resp = await self.ws.recv()
-            resp_data = json.loads(resp)
+            resp: Union[str, bytes] = await self.ws.recv()
+            resp_data: Dict[str, Any] = json.loads(resp)
 
             if not resp_data.get("ok", False):
-                error = resp_data.get("error", {})
+                error: Dict[str, Any] = resp_data.get("error", {})
                 raise AuthenticationError(
                     message=error.get("message", "Authentication failed"),
                     code=error.get("code"),
@@ -132,9 +215,11 @@ class OpenClawClient:
                 )
 
             # 4. Success
-            payload_type = resp_data.get("payload", {}).get("type")
+            payload_type: str = resp_data.get("payload", {}).get("type")
             if payload_type == "hello-ok":
-                self.device_token = resp_data.get("payload", {}).get("auth", {}).get("deviceToken")
+                self.device_token = resp_data.get("payload", {}).get("auth", {}).get(
+                    "deviceToken"
+                )
                 # Start listening for events
                 self._listening_task = asyncio.create_task(self._listen())
                 return True
@@ -142,28 +227,29 @@ class OpenClawClient:
             raise AuthenticationError(f"Unexpected response type: {payload_type}")
 
         except Exception as e:
-            await self.ws.close()
+            if self.ws is not None:
+                await self.ws.close()
             self.ws = None
             if isinstance(e, AuthenticationError):
                 raise
             raise OpenClawConnectionError(f"Connection failed: {e}") from e
 
-    def _build_connect_request(self, nonce: str, ts: int) -> dict:
+    def _build_connect_request(self, nonce: str, ts: int) -> Dict[str, Any]:
         """Build signed connect request"""
-        raw_bytes = self.public_key.public_bytes(
+        raw_bytes: bytes = self.public_key.public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw,
         )
-        public_key_b64 = base64.b64encode(raw_bytes).decode()
+        public_key_b64: str = base64.b64encode(raw_bytes).decode()
 
-        sig = sign_device_auth_v2(
-            device_id=self.device_id,
+        sig: str = sign_device_auth_v2(
+            device_id=self.device_id,  # type: ignore
             client_id=self.client_id,
             client_mode=self.client_mode,
             role=self.role,
             scopes=self.scopes,
             signed_at_ms=ts,
-            token=self.token or "",
+            token=self.token,
             nonce=nonce,
             private_key=self.private_key,
         )
@@ -199,7 +285,12 @@ class OpenClawClient:
             },
         }
 
-    async def _send_request(self, method: str, params: dict = None, timeout: float = 30) -> dict:
+    async def _send_request(
+        self,
+        method: str,
+        params: Optional[Dict[str, Any]] = None,
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
         """
         Send request and wait for response.
 
@@ -212,72 +303,80 @@ class OpenClawClient:
             Response data
 
         Raises:
+            OpenClawConnectionError: If not connected.
+            OpenClawTimeoutError: If request times out.
             RequestError: If request fails.
-            TimeoutError: If request times out.
         """
         if self.ws is None:
             raise OpenClawConnectionError("Not connected")
 
-        req_id = gen_nonce()
-        req = {
+        req_id: str = gen_nonce()
+        req: Dict[str, Any] = {
             "type": "req",
             "id": req_id,
             "method": method,
             "params": params or {},
         }
 
-        future = asyncio.Future()
+        future: asyncio.Future[Dict[str, Any]] = asyncio.Future()
         self._pending_requests[req_id] = future
 
         try:
             await self.ws.send(json.dumps(req, separators=(",", ":")))
-            resp = await asyncio.wait_for(future, timeout=timeout)
+            resp: Dict[str, Any] = await asyncio.wait_for(future, timeout=timeout)
             return resp
         except asyncio.TimeoutError:
             self._pending_requests.pop(req_id, None)
-            raise TimeoutError(f"Request {method} timed out after {timeout}s")
+            raise OpenClawTimeoutError(
+                f"Request {method} timed out after {timeout}s"
+            )
         except Exception as e:
             self._pending_requests.pop(req_id, None)
             raise RequestError(f"Request {method} failed: {e}") from e
 
-    async def _listen(self):
+    async def _listen(self) -> None:
         """Listen for incoming messages and dispatch to handlers"""
         try:
-            async for msg in self.ws:
-                data = json.loads(msg)
-                msg_type = data.get("type") or data.get("event", "")
+            async for msg in self.ws:  # type: ignore
+                data: Dict[str, Any] = json.loads(msg)
+                msg_type: str = data.get("type") or data.get("event", "")
 
                 if msg_type == "res" and "id" in data:
                     # Response to a pending request
-                    req_id = data["id"]
-                    future = self._pending_requests.pop(req_id, None)
-                    if future and not future.done():
+                    req_id: str = data["id"]
+                    future: Optional[asyncio.Future[Dict[str, Any]]] = (
+                        self._pending_requests.pop(req_id, None)
+                    )
+                    if future is not None and not future.done():
                         if data.get("ok"):
                             future.set_result(data.get("payload", {}))
                         else:
-                            error = data.get("error", {})
-                            future.set_exception(RequestError(
-                                message=error.get("message", "Request failed"),
-                                code=error.get("code"),
-                                details=error.get("details"),
-                            ))
+                            error: Dict[str, Any] = data.get("error", {})
+                            future.set_exception(
+                                RequestError(
+                                    message=error.get("message", "Request failed"),
+                                    code=error.get("code"),
+                                    details=error.get("details"),
+                                )
+                            )
                 elif msg_type == "event":
                     # Event notification
-                    event_name = data.get("event", "")
-                    payload = data.get("payload", {})
-                    handler = self._event_handlers.get(event_name)
-                    if handler:
+                    event_name: str = data.get("event", "")
+                    payload: Dict[str, Any] = data.get("payload", {})
+                    handler: Optional[Callable[[Dict[str, Any]], Any]] = (
+                        self._event_handlers.get(event_name)
+                    )
+                    if handler is not None:
                         asyncio.create_task(handler(payload))
-                elif msg_type == "res" and "id" not in data:
-                    # Unsolicited response
-                    pass
         except asyncio.CancelledError:
             pass
         except Exception as e:
             # Log error but don't crash
             print(f"[listen] Error: {e}")
 
-    def on(self, event: str, handler: Callable):
+    def on(
+        self, event: str, handler: Callable[[Dict[str, Any]], Any]
+    ) -> None:
         """
         Register event handler.
 
@@ -287,18 +386,18 @@ class OpenClawClient:
         """
         self._event_handlers[event] = handler
 
-    async def close(self):
+    async def close(self) -> None:
         """Close the connection"""
-        if self._listening_task:
+        if self._listening_task is not None:
             self._listening_task.cancel()
             self._listening_task = None
-        if self.ws:
+        if self.ws is not None:
             await self.ws.close()
             self.ws = None
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "OpenClawClient":
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.close()

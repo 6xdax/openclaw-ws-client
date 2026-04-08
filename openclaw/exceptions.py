@@ -1,12 +1,20 @@
 """OpenClaw SDK Exceptions"""
 
+from typing import Optional, Dict, Any
+
 
 class OpenClawError(Exception):
     """Base exception for OpenClaw SDK"""
-    def __init__(self, message: str, code: str = None, details: dict = None):
-        self.message = message
-        self.code = code
-        self.details = details or {}
+
+    def __init__(
+        self,
+        message: str,
+        code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.message: str = message
+        self.code: Optional[str] = code
+        self.details: Dict[str, Any] = details or {}
         super().__init__(self.message)
 
 

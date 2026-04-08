@@ -19,6 +19,9 @@ Usage:
 
             # Send message
             await client.sessions.send(session["sessionKey"], "Hello!")
+
+            # Listen for events
+            client.on("agent", lambda p: print(f"Agent event: {p}"))
 """
 
 from .client import OpenClawClient

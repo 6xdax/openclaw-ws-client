@@ -1,13 +1,20 @@
 """OpenClaw Session Management"""
 
-from typing import Dict, Any, List
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Dict, Any, List, Optional
+
+if TYPE_CHECKING:
+    from .client import OpenClawClient
 
 
 class SessionsManager:
     """Manage OpenClaw Sessions"""
 
-    def __init__(self, client):
-        self._client = client
+    __slots__ = ("_client",)
+
+    def __init__(self, client: "OpenClawClient") -> None:
+        self._client: "OpenClawClient" = client
 
     async def list(self) -> List[Dict[str, Any]]:
         """
@@ -16,14 +23,14 @@ class SessionsManager:
         Returns:
             List of session objects
         """
-        resp = await self._client._send_request("sessions.list")
+        resp: Dict[str, Any] = await self._client._send_request("sessions.list")
         return resp.get("sessions", [])
 
     async def create(
         self,
-        agent_id: str = None,
-        title: str = None,
-        **kwargs
+        agent_id: Optional[str] = None,
+        title: Optional[str] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """
         Create a new session.
@@ -36,10 +43,10 @@ class SessionsManager:
         Returns:
             Created session object with sessionKey
         """
-        params = {}
-        if agent_id:
+        params: Dict[str, Any] = {}
+        if agent_id is not None:
             params["agentId"] = agent_id
-        if title:
+        if title is not None:
             params["title"] = title
         params.update(kwargs)
 
@@ -56,14 +63,16 @@ class SessionsManager:
         Returns:
             True if deleted successfully
         """
-        resp = await self._client._send_request("sessions.delete", {"sessionKey": session_key})
+        resp = await self._client._send_request(
+            "sessions.delete", {"sessionKey": session_key}
+        )
         return resp.get("ok", False)
 
     async def send(
         self,
         session_key: str,
         text: str,
-        stream: bool = True
+        stream: bool = True,
     ) -> Dict[str, Any]:
         """
         Send a message to a session.
@@ -76,11 +85,15 @@ class SessionsManager:
         Returns:
             Response data
         """
-        params = {"sessionKey": session_key, "text": text, "stream": stream}
+        params: Dict[str, Any] = {
+            "sessionKey": session_key,
+            "text": text,
+            "stream": stream,
+        }
         resp = await self._client._send_request("sessions.send", params)
         return resp
 
-    async def subscribe(self, session_key: str = None) -> bool:
+    async def subscribe(self, session_key: Optional[str] = None) -> bool:
         """
         Subscribe to session events.
 
@@ -90,8 +103,8 @@ class SessionsManager:
         Returns:
             True if subscribed successfully
         """
-        params = {}
-        if session_key:
+        params: Dict[str, Any] = {}
+        if session_key is not None:
             params["sessionKey"] = session_key
         resp = await self._client._send_request("sessions.subscribe", params)
         return resp.get("ok", False)
@@ -108,7 +121,7 @@ class SessionsManager:
         """
         resp = await self._client._send_request(
             "sessions.messages.subscribe",
-            {"sessionKey": session_key}
+            {"sessionKey": session_key},
         )
         return resp.get("ok", False)
 
@@ -122,7 +135,9 @@ class SessionsManager:
         Returns:
             True if aborted successfully
         """
-        resp = await self._client._send_request("sessions.abort", {"sessionKey": session_key})
+        resp = await self._client._send_request(
+            "sessions.abort", {"sessionKey": session_key}
+        )
         return resp.get("ok", False)
 
     async def reset(self, session_key: str) -> bool:
@@ -135,15 +150,17 @@ class SessionsManager:
         Returns:
             True if reset successfully
         """
-        resp = await self._client._send_request("sessions.reset", {"sessionKey": session_key})
+        resp = await self._client._send_request(
+            "sessions.reset", {"sessionKey": session_key}
+        )
         return resp.get("ok", False)
 
     async def patch(
         self,
         session_key: str,
-        title: str = None,
-        pinned: bool = None,
-        **kwargs
+        title: Optional[str] = None,
+        pinned: Optional[bool] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """
         Update session metadata.
@@ -157,7 +174,7 @@ class SessionsManager:
         Returns:
             Updated session object
         """
-        params = {"sessionKey": session_key}
+        params: Dict[str, Any] = {"sessionKey": session_key}
         if title is not None:
             params["title"] = title
         if pinned is not None:
@@ -177,10 +194,14 @@ class SessionsManager:
         Returns:
             True if compacted successfully
         """
-        resp = await self._client._send_request("sessions.compact", {"sessionKey": session_key})
+        resp = await self._client._send_request(
+            "sessions.compact", {"sessionKey": session_key}
+        )
         return resp.get("ok", False)
 
-    async def preview(self, session_key: str, limit: int = 10) -> List[Dict[str, Any]]:
+    async def preview(
+        self, session_key: str, limit: int = 10
+    ) -> List[Dict[str, Any]]:
         """
         Get a preview of session messages.
 
@@ -192,8 +213,7 @@ class SessionsManager:
             List of message objects
         """
         resp = await self._client._send_request(
-            "sessions.preview",
-            {"sessionKey": session_key, "limit": limit}
+            "sessions.preview", {"sessionKey": session_key, "limit": limit}
         )
         return resp.get("messages", [])
 
@@ -208,12 +228,13 @@ class SessionsManager:
             List of compaction records
         """
         resp = await self._client._send_request(
-            "sessions.compaction.list",
-            {"sessionKey": session_key}
+            "sessions.compaction.list", {"sessionKey": session_key}
         )
         return resp.get("compactions", [])
 
-    async def compaction_get(self, session_key: str, compaction_id: str) -> Dict[str, Any]:
+    async def compaction_get(
+        self, session_key: str, compaction_id: str
+    ) -> Dict[str, Any]:
         """
         Get a specific compaction record.
 
@@ -226,14 +247,12 @@ class SessionsManager:
         """
         resp = await self._client._send_request(
             "sessions.compaction.get",
-            {"sessionKey": session_key, "compactionId": compaction_id}
+            {"sessionKey": session_key, "compactionId": compaction_id},
         )
         return resp.get("compaction", {})
 
     async def compaction_branch(
-        self,
-        session_key: str,
-        compaction_id: str
+        self, session_key: str, compaction_id: str
     ) -> Dict[str, Any]:
         """
         Branch a new session from a compaction point.
@@ -247,14 +266,12 @@ class SessionsManager:
         """
         resp = await self._client._send_request(
             "sessions.compaction.branch",
-            {"sessionKey": session_key, "compactionId": compaction_id}
+            {"sessionKey": session_key, "compactionId": compaction_id},
         )
         return resp.get("session", {})
 
     async def compaction_restore(
-        self,
-        session_key: str,
-        compaction_id: str
+        self, session_key: str, compaction_id: str
     ) -> bool:
         """
         Restore a session from a compaction.
@@ -268,6 +285,6 @@ class SessionsManager:
         """
         resp = await self._client._send_request(
             "sessions.compaction.restore",
-            {"sessionKey": session_key, "compactionId": compaction_id}
+            {"sessionKey": session_key, "compactionId": compaction_id},
         )
         return resp.get("ok", False)
