@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, Any, List
+from typing import TYPE_CHECKING, Dict, Any, List, Optional
 
 if TYPE_CHECKING:
     from .client import OpenClawClient
@@ -26,14 +26,20 @@ class ToolsManager:
         resp: Dict[str, Any] = await self._client._send_request("tools.catalog")
         return resp.get("tools", [])
 
-    async def effective(self) -> List[Dict[str, Any]]:
+    async def effective(self, session_key: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get the list of tools that are currently effective (enabled).
+
+        Args:
+            session_key: Optional session key for context
 
         Returns:
             List of enabled tool definitions
         """
-        resp = await self._client._send_request("tools.effective")
+        params: Dict[str, Any] = {}
+        if session_key:
+            params["sessionKey"] = session_key
+        resp = await self._client._send_request("tools.effective", params)
         return resp.get("tools", [])
 
     async def enable(self, name: str) -> bool:

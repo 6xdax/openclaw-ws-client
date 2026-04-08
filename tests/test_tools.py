@@ -51,7 +51,7 @@ async def test_effective(tools_manager, mock_client):
 
     assert len(result) == 1
     assert result[0]["name"] == "weather"
-    mock_client._send_request.assert_called_once_with("tools.effective")
+    mock_client._send_request.assert_called_once_with("tools.effective", {})
 
 
 @pytest.mark.asyncio
