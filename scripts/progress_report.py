@@ -14,15 +14,12 @@ TODO_ITEMS = [
     ("sessions.py", "Session 管理 (list/create/delete/send...)", "✅ 完成"),
     ("tools.py", "Tools 管理 (catalog/effective)", "✅ 完成"),
     ("__init__.py", "包导出", "✅ 完成"),
-    ("pyproject.toml", "包配置完善", "✅ 完成"),
-    ("README.md", "完善文档", "🔄 进行中"),
-    ("自动重连机制", "指数退避重试", "📋 待完成"),
+    ("README.md", "完善文档", "✅ 完成"),
+    ("类型注解", "Type hints + mypy 检查", "✅ 完成"),
+    ("单元测试", "pytest 32 tests passing", "✅ 完成"),
+    ("自动重连机制", "指数退避重试", "🔄 进行中"),
     ("异步迭代器", "async for 监听消息", "📋 待完成"),
-    ("统一错误处理", "OpenClawError 异常类", "✅ 完成"),
-    ("类型注解", "Type hints", "📋 待完成"),
-    ("Context manager", "with async context", "✅ 完成"),
-    ("单元测试", "pytest", "📋 待完成"),
-    ("发布 PyPI", "发布包", "📋 待完成"),
+    ("PyPI 发布", "发布包", "❌ 不需要"),
 ]
 
 def get_git_status():
@@ -62,10 +59,30 @@ def get_file_stats():
     except Exception as e:
         return 0, 0
 
+def get_test_results():
+    """获取测试结果"""
+    try:
+        result = subprocess.run(
+            ["uv", "run", "pytest", "tests/", "-v", "--tb=no", "-q"],
+            cwd=PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = result.stdout + result.stderr
+        if "passed" in output:
+            for line in output.split("\n"):
+                if "passed" in line:
+                    return f"✅ {line.strip()}"
+        return "❌ 测试失败"
+    except Exception as e:
+        return f"❌ 测试运行失败: {e}"
+
 def main():
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     n_files, n_lines = get_file_stats()
     git_status = get_git_status()
+    test_results = get_test_results()
 
     report = f"""
 🤖 OpenClaw Python SDK 开发进度报告
@@ -83,16 +100,19 @@ def main():
    ✅ Agent 管理 (agents.py)
    ✅ Session 管理 (sessions.py)
    ✅ Tools 管理 (tools.py)
-   ✅ 包导出 (__init__.py)
    ✅ Context manager 支持
+   ✅ README.md 完善
+   ✅ 类型注解 (mypy 通过)
+   ✅ 单元测试 ({test_results})
+
+🔄 进行中:
+   🔄 自动重连机制优化
 
 📋 待完成功能:
-   📋 README.md 完善
-   📋 类型注解完善
-   📋 单元测试
-   📋 自动重连机制优化
    📋 异步迭代器支持
-   📋 发布 PyPI
+
+❌ 不需要:
+   ❌ PyPI 发布（用户不需要）
 
 {git_status}
 

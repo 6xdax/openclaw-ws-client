@@ -16,6 +16,7 @@ from typing import (
     AsyncIterator,
     List,
     Union,
+    Literal,
 )
 from websockets.asyncio import client as ws_client
 from dataclasses import dataclass
@@ -45,22 +46,11 @@ def gen_nonce(length: int = 32) -> str:
 
 
 @dataclass
-class ClientInfo:
-    """Client information for connection"""
-    id: str
-    version: str
-    platform: str
-    mode: str
-
-
-@dataclass
-class DeviceInfo:
-    """Device information for authentication"""
-    id: str
-    public_key: str
-    signature: str
-    signed_at: int
-    nonce: str
+class StreamEvent:
+    """Stream event from OpenClaw"""
+    type: str  # "text", "tool", "agent", "session"
+    data: Dict[str, Any]
+    session_key: Optional[str] = None
 
 
 class OpenClawClient:
@@ -92,6 +82,9 @@ class OpenClawClient:
         "_pending_requests",
         "_listening_task",
         "_event_handlers",
+        "_stream_queue",
+        "_reconnect_count",
+        "_should_reconnect",
         "agents",
         "sessions",
         "tools",
@@ -153,6 +146,11 @@ class OpenClawClient:
         # Event handling
         self._listening_task: Optional[asyncio.Task[None]] = None
         self._event_handlers: Dict[str, Callable[[Dict[str, Any]], Any]] = {}
+
+        # Streaming
+        self._stream_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
+        self._reconnect_count: int = 0
+        self._should_reconnect: bool = True
 
         # Managers
         self.agents: AgentsManager = AgentsManager(self)
@@ -222,6 +220,7 @@ class OpenClawClient:
                 )
                 # Start listening for events
                 self._listening_task = asyncio.create_task(self._listen())
+                self._reconnect_count = 0
                 return True
 
             raise AuthenticationError(f"Unexpected response type: {payload_type}")
@@ -233,6 +232,32 @@ class OpenClawClient:
             if isinstance(e, AuthenticationError):
                 raise
             raise OpenClawConnectionError(f"Connection failed: {e}") from e
+
+    async def _reconnect(self) -> bool:
+        """
+        Attempt to reconnect with exponential backoff.
+
+        Returns:
+            True if reconnected successfully.
+        """
+        if not self.reconnect:
+            return False
+
+        if self._reconnect_count >= self.max_reconnect_attempts:
+            print(f"[reconnect] Max attempts ({self.max_reconnect_attempts}) reached")
+            return False
+
+        self._reconnect_count += 1
+        delay = self.reconnect_delay * (2 ** (self._reconnect_count - 1))
+        print(f"[reconnect] Attempt {self._reconnect_count}/{self.max_reconnect_attempts} in {delay}s...")
+
+        await asyncio.sleep(delay)
+
+        try:
+            return await self.connect()
+        except Exception as e:
+            print(f"[reconnect] Failed: {e}")
+            return await self._reconnect()
 
     def _build_connect_request(self, nonce: str, ts: int) -> Dict[str, Any]:
         """Build signed connect request"""
@@ -360,19 +385,114 @@ class OpenClawClient:
                                 )
                             )
                 elif msg_type == "event":
-                    # Event notification
+                    # Event notification - dispatch to stream queue
                     event_name: str = data.get("event", "")
                     payload: Dict[str, Any] = data.get("payload", {})
+
+                    # Create stream event based on event type
+                    if event_name == "agent":
+                        stream_type = "text"
+                        session_key = payload.get("sessionKey")
+                    elif event_name == "session.tool":
+                        stream_type = "tool"
+                        session_key = payload.get("sessionKey")
+                    elif event_name == "session.message":
+                        stream_type = "message"
+                        session_key = payload.get("sessionKey")
+                    else:
+                        stream_type = event_name
+                        session_key = payload.get("sessionKey")
+
+                    event = StreamEvent(
+                        type=stream_type,
+                        data=payload,
+                        session_key=session_key,
+                    )
+                    await self._stream_queue.put(event)
+
+                    # Also call registered handler
                     handler: Optional[Callable[[Dict[str, Any]], Any]] = (
                         self._event_handlers.get(event_name)
                     )
                     if handler is not None:
                         asyncio.create_task(handler(payload))
+                elif msg_type == "res" and "id" not in data:
+                    # Unsolicited response
+                    pass
         except asyncio.CancelledError:
             pass
         except Exception as e:
             # Log error but don't crash
             print(f"[listen] Error: {e}")
+            # Attempt reconnect if enabled
+            if self.reconnect and self._should_reconnect:
+                await self._reconnect()
+
+    async def events(self) -> AsyncIterator[StreamEvent]:
+        """
+        Async iterator for streaming events.
+
+        Usage:
+            async with OpenClawClient() as client:
+                await client.sessions.subscribe("session-key")
+                async for event in client.events():
+                    print(event.type, event.data)
+
+        Yields:
+            StreamEvent objects with type, data, and session_key
+        """
+        while self._should_reconnect:
+            try:
+                event = await asyncio.wait_for(
+                    self._stream_queue.get(),
+                    timeout=60.0
+                )
+                yield event
+            except asyncio.TimeoutError:
+                # Send heartbeat to keep connection alive
+                continue
+
+    async def send_message_stream(
+        self,
+        session_key: str,
+        text: str,
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Send a message and stream the response.
+
+        This is a convenience method that:
+        1. Sends the message
+        2. Yields stream events as they arrive
+
+        Usage:
+            async with OpenClawClient() as client:
+                async for event in client.send_message_stream("sess-key", "Hello!"):
+                    if event.type == "text":
+                        print(event.data.get("text"), end="", flush=True)
+                    elif event.type == "tool":
+                        print(f"\\n[Using tool: {event.data.get('name')}]")
+
+        Args:
+            session_key: Session key
+            text: Message text
+
+        Yields:
+            StreamEvent objects
+        """
+        # Subscribe to the session
+        await self.sessions.messages_subscribe(session_key)
+
+        # Send the message
+        await self._send_request("sessions.send", {
+            "sessionKey": session_key,
+            "text": text,
+            "stream": True,
+        })
+
+        # Yield events until we get a completion signal or timeout
+        async for event in self.events():
+            if event.session_key == session_key:
+                yield event
 
     def on(
         self, event: str, handler: Callable[[Dict[str, Any]], Any]
@@ -388,6 +508,7 @@ class OpenClawClient:
 
     async def close(self) -> None:
         """Close the connection"""
+        self._should_reconnect = False
         if self._listening_task is not None:
             self._listening_task.cancel()
             self._listening_task = None

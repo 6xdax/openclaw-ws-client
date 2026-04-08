@@ -114,14 +114,14 @@ class SessionsManager:
         Subscribe to messages for a specific session.
 
         Args:
-            session_key: Session key to subscribe to
+            session_key: Session key (or key) to subscribe to
 
         Returns:
             True if subscribed successfully
         """
         resp = await self._client._send_request(
             "sessions.messages.subscribe",
-            {"sessionKey": session_key},
+            {"key": session_key},
         )
         return resp.get("ok", False)
 
