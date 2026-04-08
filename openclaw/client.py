@@ -37,6 +37,9 @@ from .crypto_utils import load_openclaw_identity, sign_device_auth_v2
 from .agents import AgentsManager
 from .sessions import SessionsManager
 from .tools import ToolsManager
+from .config import ConfigManager
+from .nodes import NodesManager
+from .misc import HealthManager, LogsManager, SecretsManager, StatusManager, UsageManager
 from cryptography.hazmat.primitives import serialization
 
 
@@ -88,6 +91,13 @@ class OpenClawClient:
         "agents",
         "sessions",
         "tools",
+        "config",
+        "nodes",
+        "health",
+        "logs",
+        "secrets",
+        "status",
+        "usage",
     )
 
     def __init__(
@@ -156,6 +166,13 @@ class OpenClawClient:
         self.agents: AgentsManager = AgentsManager(self)
         self.sessions: SessionsManager = SessionsManager(self)
         self.tools: ToolsManager = ToolsManager(self)
+        self.config: ConfigManager = ConfigManager(self)
+        self.nodes: NodesManager = NodesManager(self)
+        self.health: HealthManager = HealthManager(self)
+        self.logs: LogsManager = LogsManager(self)
+        self.secrets: SecretsManager = SecretsManager(self)
+        self.status: StatusManager = StatusManager(self)
+        self.usage: UsageManager = UsageManager(self)
 
     def _load_identity(self) -> None:
         """Load device identity from OpenClaw config"""
